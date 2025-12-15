@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -279,31 +280,59 @@ fun NoteItem(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {
         Column(Modifier.padding(12.dp)) {
-            Text(note.text)
+            Text(
+                text = note.text,
+                style = MaterialTheme.typography.bodyLarge
+            )
             Spacer(Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(note.date, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    note.date,
+                    style = MaterialTheme.typography.bodySmall
+                )
+
                 Row {
                     IconButton(onClick = onEdit) {
-                        Icon(Icons.Default.Edit, null)
+                        Icon(Icons.Default.Edit, contentDescription = "Редактировать")
                     }
+
                     IconButton(onClick = onDelete) {
-                        Icon(Icons.Default.Delete, null)
+                        Icon(Icons.Default.Delete, contentDescription = "Удалить")
+                    }
+
+                    IconButton(onClick = { shareNote(note, context) }) {
+                        Icon(Icons.Default.Share, contentDescription = "Поделиться")
                     }
                 }
             }
         }
     }
 }
+
+// Функция для отправки текста заметки через Intent
+private fun shareNote(note: Note, context: Context) {
+    val sendIntent: Intent = Intent().apply {
+        action = Intent.ACTION_SEND
+        putExtra(Intent.EXTRA_TEXT, note.text)
+        type = "text/plain"
+    }
+
+    val shareIntent = Intent.createChooser(sendIntent, "Поделиться заметкой")
+    context.startActivity(shareIntent)
+}
+
 
 
 private fun startSpeechToText(
