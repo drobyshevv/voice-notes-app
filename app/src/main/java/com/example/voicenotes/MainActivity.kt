@@ -1,5 +1,6 @@
 package com.example.voicenotes
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -23,12 +24,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+//import com.google.firebase.crashlytics.buildtools.reloc.com.google.common.reflect.TypeToken
+import com.google.gson.reflect.TypeToken
+import com.google.gson.Gson
+//import com.google.gson.reflect.TypeToken
 import java.text.SimpleDateFormat
 import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        NotesStorage.init(this)
+
         setContent {
             VoiceNotesTheme {
                 Surface(
@@ -42,48 +50,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-object NotesStorage {
-    private val notes = mutableStateListOf<Note>()
-
-    fun addNote(text: String) {
-        notes.add(0, Note(
-            id = System.currentTimeMillis(),
-            text = text,
-            date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date())
-        ))
-    }
-
-    fun getNotes(): List<Note> = notes
-
-    fun deleteNote(note: Note) {
-        notes.remove(note)
-    }
-
-    fun updateNote(noteId: Long, newText: String) {
-        val iterator = notes.iterator()
-        var index = 0
-        var found = false
-
-        while (iterator.hasNext()) {
-            val note = iterator.next()
-            if (note.id == noteId) {
-                found = true
-                break
-            }
-            index++
-        }
-
-        if (found) {
-            val oldNote = notes[index]
-            notes[index] = oldNote.copy(
-                text = newText,
-                date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date())
-            )
-            val updatedNote = notes.removeAt(index)
-            notes.add(0, updatedNote)
-        }
-    }
-}
 
 data class Note(
     val id: Long,
@@ -91,11 +57,70 @@ data class Note(
     val date: String
 )
 
+object NotesStorage {
+
+    private const val PREFS_NAME = "voice_notes_prefs"
+    private const val NOTES_KEY = "notes"
+
+    private val notes = mutableStateListOf<Note>()
+    private val gson = Gson()
+
+    fun init(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val json = prefs.getString(NOTES_KEY, null)
+
+        if (!json.isNullOrEmpty()) {
+            val type = object : TypeToken<List<Note>>() {}.type
+            val savedNotes: List<Note> = gson.fromJson(json, type)
+            notes.clear()
+            notes.addAll(savedNotes)
+        }
+    }
+
+    private fun save(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString(NOTES_KEY, gson.toJson(notes))
+            .apply()
+    }
+
+    fun getNotes(): List<Note> = notes
+
+    fun addNote(context: Context, text: String) {
+        notes.add(
+            0,
+            Note(
+                id = System.currentTimeMillis(),
+                text = text,
+                date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date())
+            )
+        )
+        save(context)
+    }
+
+    fun deleteNote(context: Context, note: Note) {
+        notes.remove(note)
+        save(context)
+    }
+
+    fun updateNote(context: Context, noteId: Long, newText: String) {
+        val index = notes.indexOfFirst { it.id == noteId }
+        if (index != -1) {
+            notes[index] = notes[index].copy(
+                text = newText,
+                date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date())
+            )
+            save(context)
+        }
+    }
+}
+
 @Composable
 fun VoiceNotesApp() {
     val context = LocalContext.current
-    var debugText by remember { mutableStateOf("Нажмите кнопку чтобы начать") }
     val notes = remember { NotesStorage.getNotes() }
+
+    var debugText by remember { mutableStateOf("Нажмите кнопку чтобы начать") }
 
     var showEditDialog by remember { mutableStateOf(false) }
     var editingNote by remember { mutableStateOf<Note?>(null) }
@@ -107,88 +132,48 @@ fun VoiceNotesApp() {
     val speechLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        when (result.resultCode) {
-            ComponentActivity.RESULT_OK -> {
-                val data = result.data
-                val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                if (results != null && results.isNotEmpty()) {
-                    val spokenText = results[0]
-                    debugText = "Распознано: $spokenText"
-                    Toast.makeText(context, "Распознано: $spokenText", Toast.LENGTH_LONG).show()
-                    NotesStorage.addNote(spokenText)
-                } else {
-                    debugText = "Речь не распознана"
-                    Toast.makeText(context, "Речь не распознана", Toast.LENGTH_SHORT).show()
-                }
-            }
-            ComponentActivity.RESULT_CANCELED -> {
-                debugText = "Распознавание отменено"
-                Toast.makeText(context, "Распознавание отменено", Toast.LENGTH_SHORT).show()
-            }
-            else -> {
-                debugText = "Ошибка распознавания"
-                Toast.makeText(context, "Ошибка распознавания", Toast.LENGTH_SHORT).show()
+        if (result.resultCode == ComponentActivity.RESULT_OK) {
+            val text = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+
+            if (!text.isNullOrBlank()) {
+                debugText = "Распознано: $text"
+                NotesStorage.addNote(context, text)
+            } else {
+                debugText = "Речь не распознана"
             }
         }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            startSpeechToText(context, speechLauncher)
-        } else {
-            Toast.makeText(context, "Разрешение на микрофон отклонено", Toast.LENGTH_LONG).show()
-        }
+    ) { granted ->
+        if (granted) startSpeechToText(context, speechLauncher)
     }
+
 
     if (showEditDialog) {
         AlertDialog(
-            onDismissRequest = {
-                showEditDialog = false
-                editingNote = null
-                editText = ""
-            },
+            onDismissRequest = { showEditDialog = false },
             title = { Text("Редактировать заметку") },
             text = {
-                Column {
-                    TextField(
-                        value = editText,
-                        onValueChange = { editText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Введите текст заметки...") },
-                        singleLine = false,
-                        maxLines = 5
-                    )
-                }
+                TextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth()
+                )
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (editText.isNotBlank()) {
-                            editingNote?.let { note ->
-                                NotesStorage.updateNote(note.id, editText)
-                                Toast.makeText(context, "Заметка обновлена", Toast.LENGTH_SHORT).show()
-                            }
-                            showEditDialog = false
-                            editingNote = null
-                            editText = ""
-                        } else {
-                            Toast.makeText(context, "Заметка не может быть пустой", Toast.LENGTH_SHORT).show()
-                        }
+                Button(onClick = {
+                    editingNote?.let {
+                        NotesStorage.updateNote(context, it.id, editText)
                     }
-                ) {
-                    Text("Сохранить")
-                }
+                    showEditDialog = false
+                }) { Text("Сохранить") }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        showEditDialog = false
-                        editingNote = null
-                        editText = ""
-                    }
-                ) {
+                TextButton(onClick = { showEditDialog = false }) {
                     Text("Отмена")
                 }
             }
@@ -197,140 +182,93 @@ fun VoiceNotesApp() {
 
     if (showCreateDialog) {
         AlertDialog(
-            onDismissRequest = {
-                showCreateDialog = false
-                newNoteText = ""
-            },
+            onDismissRequest = { showCreateDialog = false },
             title = { Text("Новая заметка") },
             text = {
-                Column {
-                    TextField(
-                        value = newNoteText,
-                        onValueChange = { newNoteText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Введите текст заметки...") },
-                        singleLine = false,
-                        maxLines = 5
-                    )
-                }
+                TextField(
+                    value = newNoteText,
+                    onValueChange = { newNoteText = it },
+                    modifier = Modifier.fillMaxWidth()
+                )
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (newNoteText.isNotBlank()) {
-                            NotesStorage.addNote(newNoteText)
-                            Toast.makeText(context, "Заметка создана", Toast.LENGTH_SHORT).show()
-                            showCreateDialog = false
-                            newNoteText = ""
-                        } else {
-                            Toast.makeText(context, "Заметка не может быть пустой", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                ) {
-                    Text("Создать")
-                }
+                Button(onClick = {
+                    NotesStorage.addNote(context, newNoteText)
+                    newNoteText = ""
+                    showCreateDialog = false
+                }) { Text("Создать") }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        showCreateDialog = false
-                        newNoteText = ""
-                    }
-                ) {
+                TextButton(onClick = { showCreateDialog = false }) {
                     Text("Отмена")
                 }
             }
         )
     }
 
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(16.dp)
     ) {
-        Text(
-            text = "Голосовые заметки",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
 
         Text(
-            text = debugText,
-            modifier = Modifier.padding(bottom = 16.dp)
+            "Голосовые заметки",
+            style = MaterialTheme.typography.headlineSmall
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
+        Spacer(Modifier.height(8.dp))
+        Text(debugText)
+        Spacer(Modifier.height(16.dp))
+
+        Row {
             Button(
+                modifier = Modifier.weight(1f),
                 onClick = {
-                    val hasPermission = ContextCompat.checkSelfPermission(
+                    val granted = ContextCompat.checkSelfPermission(
                         context,
                         android.Manifest.permission.RECORD_AUDIO
                     ) == PackageManager.PERMISSION_GRANTED
 
-                    if (hasPermission) {
+                    if (granted) {
                         startSpeechToText(context, speechLauncher)
                     } else {
                         permissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                     }
-                },
-                modifier = Modifier.weight(1f)
+                }
             ) {
-                Text("🎤 Голосовая заметка")
+                Text("🎤 Голос")
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(Modifier.width(12.dp))
 
             Button(
-                onClick = {
-                    showCreateDialog = true
-                },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                onClick = { showCreateDialog = true }
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Добавить")
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Текстовая")
+                Icon(Icons.Default.Add, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Текст")
             }
         }
 
-        if (notes.isNotEmpty()) {
-            Text(
-                text = "Ваши заметки:",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+        Spacer(Modifier.height(16.dp))
 
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            ) {
-                items(notes) { note ->
-                    NoteItem(
-                        note = note,
-                        onEditClick = {
-                            editingNote = note
-                            editText = note.text
-                            showEditDialog = true
-                        },
-                        onDeleteClick = {
-                            NotesStorage.deleteNote(note)
-                            Toast.makeText(context, "Заметка удалена", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                }
+        LazyColumn {
+            items(notes) { note ->
+                NoteItem(
+                    note = note,
+                    onEdit = {
+                        editingNote = note
+                        editText = note.text
+                        showEditDialog = true
+                    },
+                    onDelete = {
+                        NotesStorage.deleteNote(context, note)
+                    }
+                )
             }
-        } else {
-            Text(
-                text = "Заметок пока нет",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium
-            )
         }
     }
 }
@@ -338,53 +276,28 @@ fun VoiceNotesApp() {
 @Composable
 fun NoteItem(
     note: Note,
-    onEditClick: () -> Unit,
-    onDeleteClick: () -> Unit
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            .padding(vertical = 4.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(
-                text = note.text,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+        Column(Modifier.padding(12.dp)) {
+            Text(note.text)
+            Spacer(Modifier.height(4.dp))
             Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = note.date,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
+                Text(note.date, style = MaterialTheme.typography.bodySmall)
                 Row {
-                    IconButton(
-                        onClick = onEditClick
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Редактировать",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                    IconButton(onClick = onEdit) {
+                        Icon(Icons.Default.Edit, null)
                     }
-
-                    IconButton(
-                        onClick = onDeleteClick
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Удалить",
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                    IconButton(onClick = onDelete) {
+                        Icon(Icons.Default.Delete, null)
                     }
                 }
             }
@@ -392,31 +305,21 @@ fun NoteItem(
     }
 }
 
-private fun startSpeechToText(
-    context: android.content.Context,
-    speechLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
-) {
-    val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-        putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите сейчас...")
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-    }
 
-    if (speechIntent.resolveActivity(context.packageManager) != null) {
-        try {
-            speechLauncher.launch(speechIntent)
-        } catch (e: Exception) {
-            Toast.makeText(context, "Ошибка запуска: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    } else {
-        Toast.makeText(context, "Распознавание речи не поддерживается", Toast.LENGTH_LONG).show()
+private fun startSpeechToText(
+    context: Context,
+    launcher: androidx.activity.result.ActivityResultLauncher<Intent>
+) {
+    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите...")
     }
+    launcher.launch(intent)
 }
+
 
 @Composable
 fun VoiceNotesTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        content = content
-    )
+    MaterialTheme(content = content)
 }
